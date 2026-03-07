@@ -2,7 +2,7 @@ import socket
 import sys
 
 # Khai báo hằng số
-SERVER_IP = "127.0.0.1"
+SERVER_IP = "192.168.161.133"
 SERVER_PORT = 8888
 BUF_SIZE = 1024
 
