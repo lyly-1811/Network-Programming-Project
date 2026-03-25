@@ -1,275 +1,90 @@
-# DNS Resolver & Cache Server (UDP, From Scratch)
+# D2 – DNS Resolver & Cache Server (UDP, Raw DNS per RFC 1035)
 
-## 1. Introduction
-
-This project implements a fully functional DNS Resolver Server using low-level UDP socket programming in Python. The resolver is built from scratch without relying on external DNS libraries, providing a deep understanding of how the Domain Name System (DNS) operates internally.
-
-The system is capable of constructing DNS queries manually, communicating with a public DNS server, parsing binary responses (including compressed formats), and caching results based on Time-To-Live (TTL).
-
----
-
-## 2. Key Features
-
-* Manual DNS packet construction (Header + Question)
-* UDP-based client-server architecture
-* DNS query forwarding to 8.8.8.8
-* Full DNS response parsing
-* Support for A (IPv4) and AAAA (IPv6) records
-* TTL-based caching system
-* Negative caching (NXDOMAIN handling)
-* Cache inspection via command interface
-* Clean and structured terminal output
+## Language and Operating System
+* **Programming Language:** Python 3.12+
+* **Libraries Used:** Python Standard Library (`socket`, `struct`, `time`) and `colorama` (for terminal formatting only).
+* **Operating System Tested:** Linux (Kali Linux / Ubuntu-based distributions).
+* **Network Environment:** Localhost communication over IPv4 (127.0.0.1) using UDP.
 
 ---
 
-## 3. System Architecture
+## Project Overview
+This project implements a functional DNS resolver server from the ground up, strictly adhering to the **RFC 1035** specification. Unlike standard applications that rely on high-level system calls (e.g., `gethostbyname`), this implementation manually constructs raw DNS binary packets, handles bit-level flag manipulation, and manages an internal cache with Time-To-Live (TTL) expiration logic.
 
-Client → Resolver Server → External DNS Server (8.8.8.8)
-
-### Workflow
-
-1. Client sends a domain query to the resolver
-2. Resolver checks local cache
-3. If cache hit → return cached result
-4. If cache miss → forward request to external DNS
-5. Parse response and extract relevant records
-6. Store result with TTL in cache
-7. Return formatted result to client
+The system consists of two primary components:
+1.  **Resolver Server:** A multi-functional intermediary that intercepts client requests, communicates with Public DNS (8.8.8.8), and maintains an in-memory database of previous queries.
+2.  **DNS Client:** A specialized terminal interface that uses a custom framing protocol to interact with the resolver.
 
 ---
 
-## 4. Project Structure
+## Technical Specifications & DNS Packet Construction
 
-```
-Network-Programming-Project/
-│
-├── server.py        # DNS Resolver Server
-├── client.py        # DNS Client
-├── utils.py         # DNS packet utilities
-├── cache.py         # Cache logic and TTL handling
-└── README.md
-```
+### 1. Message Framing (Client ↔ Resolver)
+To ensure data integrity over UDP, a simple application-layer framing is implemented. Each message is prefixed with a **2-byte length header** (unsigned short, big-endian `!H`).
+* **Structure:** `[2-byte Length][Message Body]`
+* **Purpose:** Allows the receiver to validate the buffer size and handle potential fragmentation or concatenation at the application level before processing the payload.
 
----
+### 2. Raw DNS Packet Structure (Resolver ↔ 8.8.8.8)
+The resolver builds a 12-byte header followed by a variable-length Question section.
 
-## 5. DNS Protocol Implementation
+#### Header Section (Bit-Field Mapping):
+| Field | Size | Description |
+|:--- |:--- |:--- |
+| ID | 16 bits | Transaction ID (e.g., 1234) |
+| QR/Opcode/AA/TC/RD | 16 bits | Query flags (0x0100 for standard recursive query) |
+| QDCOUNT | 16 bits | Number of questions (1) |
+| ANCOUNT | 16 bits | Number of answers (0 for query) |
+| NSCOUNT | 16 bits | Authority records (0) |
+| ARCOUNT | 16 bits | Additional records (0) |
 
-### 5.1 DNS Header
+#### Question Section:
+The domain name is converted into a sequence of length-prefixed labels. For example, `usth.edu.vn` is packed as:
+`\x04 usth \x03 edu \x02 vn \x00`
+This is strictly followed by:
+* **QTYPE:** 2 bytes (`0x0001` for A records, `0x001C` for AAAA records).
+* **QCLASS:** 2 bytes (`0x0001` for IN/Internet).
 
-Each DNS query includes a 12-byte header:
-
-* ID: Unique query identifier
-* Flags: Standard query (0x0100)
-* QDCOUNT: Number of questions (1)
-* ANCOUNT, NSCOUNT, ARCOUNT: Initially 0
-
----
-
-### 5.2 Domain Name Encoding
-
-Domain names are encoded into DNS format:
-
-Example:
-
-google.com →
-06 google 03 com 00
+### 3. Response Parsing & Compression
+The resolver implements a robust `skip_name` algorithm to navigate the variable-length DNS response. It specifically handles **DNS Message Compression** (identifying pointers starting with `0xC0`), allowing the parser to bypass the mirrored Question section and directly extract the relevant IP address and TTL from the Answer section.
 
 ---
 
-### 5.3 Record Types Supported
+## Cybersecurity Considerations
 
-* A (Type 1): IPv4 address
-* AAAA (Type 28): IPv6 address
+As a security-focused implementation, the following risks and architectural mitigations are identified:
 
----
-
-### 5.4 Name Compression Handling
-
-DNS responses often use pointer compression:
-
-* Prefix 0xC0 indicates a pointer
-* Resolver correctly skips compressed labels
+1.  **DNS Cache Poisoning:** This project currently utilizes a static Transaction ID (`1234`). In a production-grade security environment, this identifier must be randomized cryptographically per request to prevent off-path attackers from injecting malicious records by guessing the ID.
+2.  **UDP Spoofing and Amplification:** Since UDP is a connectionless protocol, the resolver is susceptible to source IP spoofing. While we verify the source address via `recvfrom`, a robust deployment would require DNSSEC implementation to cryptographically verify the integrity of the records received from 8.8.8.8.
+3.  **Information Leakage via Management Commands:** The `/cache` command provides full transparency into the server's memory. From a privacy and operational security perspective, this exposes user browsing history and internal network behavior. This command should be restricted to administrative interfaces or authenticated channels.
+4.  **Negative Caching Efficiency:** By implementing negative caching for `NXDOMAIN` (stored for 60 seconds), the server actively prevents "Random Subdomain Attacks" (e.g., Water Torture attacks) from overwhelming the upstream recursive resolver, providing a fundamental layer of resource exhaustion protection.
 
 ---
 
-## 6. Caching System
+## How to Run
 
-### Cache Structure
+### 1. Start the Resolver Server
+Execute the server script first to begin listening for incoming connections:
 
-Each cache entry includes:
+    python3 server.py
 
-* Domain name
-* Record type
-* IP address or error
-* Expiration time (TTL)
+The server binds to `0.0.0.0:8888`. It will display incoming client addresses and the status of each resolution (Cache hit vs. Fresh query).
 
-### Behavior
+### 2. Run the DNS Client
+In a separate terminal, launch the interactive client application:
 
-* Cache hit → return immediately
-* Cache miss → query external DNS
-* Expired entries are automatically removed
+    python3 client.py
 
----
+**Interactive Commands:**
+* `<domain>` (e.g., `google.com`) — Queries the default IPv4 (A) record.
+* `<domain> AAAA` (e.g., `google.com AAAA`) — Queries the IPv6 (AAAA) record.
+* `/cache` — Requests a full dump of the server's current cache status.
+* `exit` — Safely closes the socket and terminates the client session.
 
-## 7. Negative Caching
-
-When a domain does not exist:
-
-* Store NXDOMAIN result
-* Assign short TTL
-* Avoid repeated external queries
-
----
-
-## 8. Communication Protocol
-
-### Client Request Format
-
-```
-<domain> [TYPE]
-```
-
-Examples:
-
-```
-google.com
-google.com AAAA
-/cache
-```
-
----
-
-### Server Response Format
-
-Success:
-
-```
-Result: domain -> IP
-Source: Cache hit / DNS query
-TTL: remaining seconds
-```
-
-Error:
-
-```
-Error: NXDOMAIN - domain does not exist
-```
-
----
-
-## 9. Demonstration
-
-### Example 1: Cache Miss
-
-Request:
-
-```
-google.com
-```
-
-Response:
-
-```
-Result: google.com -> 142.250.xxx.xxx
-Source: DNS query (fresh)
-TTL: 27s
-```
-
----
-
-### Example 2: Cache Hit
-
-```
-Source: Cache hit
-```
-
----
-
-### Example 3: Cache Inspection
-
-```
-/cache
-```
-
-Output:
-
-```
---- CURRENT CACHE ---
-google.com [A] -> 142.250.xxx.xxx | TTL: 12s
-```
-
----
-
-## 10. How to Run
-
-### Start Server
-
-```
-python3 server.py
-```
-
----
-
-### Start Client
-
-```
-python3 client.py
-```
-
----
-
-### Sample Commands
-
-```
-google.com
-example.com
-/cache
-exit
-```
-
----
-
-## 11. Technical Highlights
-
-* Low-level socket programming (UDP)
-* Binary packet manipulation using struct
-* DNS protocol reverse engineering
-* TTL-based caching strategy
-* Error handling for real-world scenarios
-
----
-
-## 12. Performance Considerations
-
-* Cache significantly reduces query latency
-* Avoids redundant DNS requests
-* Efficient handling of repeated queries
-
----
-
-## 13. Future Improvements
-
-* Support additional DNS records (MX, CNAME, NS)
-* Multi-threaded resolver
-* Persistent cache (file/database)
-* Web-based interface
-* Performance benchmarking and logging
-
----
-
-## 14. Learning Outcomes
-
-Through this project, we achieved:
-
-* Strong understanding of DNS internals
-* Practical experience with network protocols
-* Ability to build systems without high-level libraries
-* Improved debugging and packet analysis skills
-
----
-
-## 15. Conclusion
-
-This project demonstrates a complete DNS Resolver system with caching, built entirely from scratch. It replicates key behaviors of real-world DNS systems, providing both educational value and practical experience in network programming.
+### 3. Live Demo Observations
+As demonstrated in the project execution logs:
+* **Initial Lookup:** A query for `google.com` results in a "DNS query (fresh)" with the original TTL (e.g., 27s).
+* **Subsequent Lookup:** Repeating the same query immediately returns "Source: Cache hit" with a decreasing TTL, confirming the internal expiration timer is functioning accurately.
+* **Non-existent Domain:** A query for an invalid domain returns a red-formatted `NXDOMAIN` error, which is subsequently stored in the negative cache.
+* **Cache Management:** Executing `/cache` displays all active memory records, their types (A/AAAA/NXDOMAIN), and real-time remaining TTL.
 
 ---
